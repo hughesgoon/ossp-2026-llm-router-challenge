@@ -22,3 +22,7 @@ build/
 /data/cache/
 /data/materialized/
 dist/
+
+src/placer/artifacts/*.npz
+src/placer/artifacts/dev_pred.npz
+src/placer/artifacts/bpe.pkl
