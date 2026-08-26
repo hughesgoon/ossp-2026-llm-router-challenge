@@ -1,216 +1,154 @@
-<!--
-SPDX-FileCopyrightText: Copyright 2026 SK TELECOM CO., LTD.
-SPDX-License-Identifier: Apache-2.0
--->
+# OSSP 2026: SK텔레콤 지정과제
 
-# Efficient LLM Routing Challenge
+`BPE + Retrieval + 2-Stage Allocation` 방식으로 구현한 초경량 라우터입니다.
+고전 임베딩 특성상 문맥 이해력이 약하지만, 빠른 속도와 예산 안전성을 기준으로 튜닝했습니다.
 
-**프롬프트 난이도·특성에 따라 최적 모델을 선택하는 compute-efficient routing
-오픈소스 라우터 개발 챌린지**
+## 로컬 실행 및 재현
 
-이 과제에서는 입력 프롬프트의 내용만 보고 다음 세 평가용 모델 프로필 중 하나를
-선택하는 라우터를 만듭니다.
+본 레포지토리 최상단에서 아래 순서로 명령을 실행해야합니다.
 
-- `ax31-light`
-- `ax31`
-- `axk1-think`
+> 참고: learn_bpe는 4분 이상 소요됩니다.
 
-라우터는 모델을 직접 호출하지 않습니다. 운영자는 라우터가 선택한 모델과
-미리 계산해 둔 모델별 평가 결과를 결합하여 품질과 비용을 계산합니다.
-따라서 문항마다 프롬프트 내용으로 모델 하나를 한 번 선택하며, 실시간으로
-모델 답변을 호출하거나 여러 답변을 비교하는 단계는 없습니다.
+```bash
+export OSSP_REPO=$(pwd)
+export PYTHONPATH=src/placer
 
-## 참가 순서
+python -m train.learn_bpe
+python -m train.build_dataset
+python -m train.fit_heads
+python -m train.calibrate_cost
+python -m train.export_artifact
 
-1. 이 저장소를 참가 팀의 GitHub 계정이나 조직으로 fork합니다.
-2. 공개 Train/Dev 자료와 규칙을 확인하고 baseline에서 구현을 시작합니다.
-3. `self-check`와 컨테이너 실행으로 세 등급의 선택 결과를 확인합니다.
-4. 제출할 코드 커밋을 공개하고, 그 커밋에서 `linux/arm64` 이미지를 빌드해
-   공개 레지스트리에 push합니다.
-5. 저장소 루트에 `submission-ossp-skt.json`을 추가해 별도 커밋하고, 이
-   커밋의 고정된 GitHub 스냅샷 URL을 결과보고서의 `프로젝트 등록 URL`에
-   기재합니다.
-
-로컬 clone 등 개발 방법과 브랜치 이름은 자유입니다. 다만 제출 시점부터 평가가
-끝날 때까지 평가할 fork와 커밋을 별도 권한 없이 열 수 있어야 합니다.
-수상팀은 수상일로부터 5년 동안 제출 저장소를 공개 상태로 유지해야 합니다.
-
-질문과 문서·하네스 오류 신고는 이 저장소의 GitHub Issues에서 받습니다.
-
-## 공개 Train/Dev 준비
-
-참가자에게 Train 1,760문항과 Dev 880문항을 제공합니다. 각 문항에는 라우팅
-입력과 모델별 실행 결과에서 산출한 점수 및 토큰 사용량이 포함됩니다. 일부
-원천 자료는 라이선스 조건에 따라 고정된 절차로 내려받거나 재현합니다.
-비공개 평가 자료의 구성과 분할 기준은 공개하지 않습니다.
-
-재배포 가능한 프롬프트와 모델 답변 본문을 제외한 평가 결과는 `data/train/`과
-`data/dev/`에 있습니다. 재배포가 불가한 AIME 원문은 타 repository로부터
-Train/Dev에 필요한 고정 파일만 공개 출처에서 받아 결합합니다.
-자료 생성에는 Python 3.10 이상이 필요합니다.
-
-```console
-python3 -m venv .venv-data
-.venv-data/bin/pip install -r data/sources/requirements-materialize-public-data.txt
-.venv-data/bin/python tools/materialize_public_data.py
+python -m eval.simulate
+python -m eval.bootstrap
+python -m eval.audit_determinism
 ```
 
-완성된 입력은 Git 비추적 경로인 `data/materialized/train/inputs.json`과
-`data/materialized/dev/inputs.json`에 생깁니다. 입력 수와 SHA-256은
-[`data/public-data.v1.json`](data/public-data.v1.json), 출처와 고지는
-[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)에서 확인할 수 있습니다.
+## 배포
 
-## 라우터 실행 입력
+### 컨테이너 빌드
 
-입력 JSON에는 정수 `schema_version: 1`, `challenge_id`, 데이터 구분을
-나타내는 `split`, `episodes`가 들어 있습니다. 각 문항은 최대 128자인
-불투명한 `episode_id`와 다음 둘 중 하나만 포함합니다.
+`container/Dockerfile.placer` 는 원본 `Dockerfile`을 그대로 따르되,
+`src/placer/router` 만 이미지에 포함하고 학습·검증 코드는 제외합니다.
 
-- 비어 있지 않은 `prompt`
-- `system`, `user`, `assistant` 역할과 `content`로 구성된 비어 있지 않은
-  `messages`
-
-공식 평가에서 벤치마크 이름, 데이터 출처, 정답, 모델 답변과 문항별 모델
-평가 결과는 라우터 실행 입력으로 제공하지 않습니다. `challenge_id`, `split`,
-`episode_id`는 실행 검증과 선택 결과의 문항 연결에만 사용하며 모델 선택에는
-사용할 수 없습니다. 해시, 정규식, n-gram, 임베딩처럼 프롬프트 내용에서 직접
-계산한 정보는 모델 선택에 사용할 수 있습니다.
-
-공개 Train/Dev에서는 프롬프트와 별도 평가 결과를 연결하고 공개 비용 정책을
-적용해 모델별 비용을 계산할 수 있습니다. 이 정보는 학습·검증과 등급별 정책
-최적화에 사용할 수 있습니다. 공식 평가 실행 때는 문항별 실제 비용이
-제공되지 않으므로, 필요한 경우 공개 정책과 프롬프트 특징으로 비용을
-추정할 수 있습니다.
-
-## 라우터 선택 결과
-
-라우터는 `fast`, `balanced`, `premium` 세 등급에 대해 각각 제출 JSON을
-만듭니다. 모든 입력 문항마다 `episode_id`와 `model_id`를 정확히 한 번
-기록해야 합니다.
-
-| 등급 | 최대 비용 비율 | 최종 점수 가중치 |
-| --- | ---: | ---: |
-| Fast | 1.25 | 0.4 |
-| Balanced | 2.0 | 0.3 |
-| Premium | 4.0 | 0.3 |
-
-비용 비율은 같은 입력 전체를 `ax31-light`로 선택했을 때의 비용을 1로 둔
-상대값입니다. 한도를 넘은 등급의 점수는 0입니다.
-
-## 왜 이런 평가 방식인가요?
-
-실제 서비스에서는 앞으로 들어올 요청의 분포를 완벽하게 알 수 없으며, 모델
-서빙에도 동시성·대기열·메모리 같은 용량 한계가 있습니다. 이 과제는 공개
-Train/Dev로 정책을 개발하되 별도 입력에서도 일반화하고, 정해진 비용 안에서
-품질을 높이는 상황을 모사합니다. 예산을 넘긴 정책은 대기열 증가, 응답 시간
-목표 위반이나 서빙 실패를 일으킬 수 있는 운영 불가능한 구성으로 보아 해당
-등급을 0점 처리합니다.
-
-## Quickstart: baseline에서 시작하기
-
-별도 패키지를 설치하지 않고 toy 자료에서 baseline과 채점 흐름을 확인할 수
-있습니다. 먼저 모든 문항에 경량 모델을 선택하는 세 등급 결과를 만듭니다.
-
-```console
-PYTHONPATH=src python3 baselines/always_light.py \
-  --input data/toy/inputs.json \
-  --output-dir build/toy-submission
-
-PYTHONPATH=src python3 -m ossp_router.cli self-check \
-  --input data/toy/inputs.json \
-  --outcomes data/toy/outcomes.json \
-  --submissions build/toy-submission \
-  --report build/toy-report.json
+```bash
+docker buildx build \
+  --platform linux/arm64 \
+  --provenance=false --sbom=false \
+  -f container/Dockerfile.placer \
+  -t ossp-router:check \
+  --load .
 ```
 
-첫 번째 명령은 세 등급의 선택 결과를 만들고, 두 번째 명령은 파일 형식, 문항
-누락 여부, 비용 한도와 점수를 검사합니다. 다음으로 프롬프트 길이, 언어,
-코드·수학 기호만 사용하는 baseline을 세 등급에 실행해 볼 수 있습니다.
+`--provenance=false --sbom=false` 는 buildx가 기본으로 첨부하는 attestation을 꺼 단일 매니페스트 이미지로 만듭니다. 이게 없으면 일부 환경(containerd 이미지 스토어)에서 `docker run` 시 `No such image` 오류가 발생할 수 있습니다.
 
-```console
-for tier in fast balanced premium; do
-  PYTHONPATH=src python3 baselines/prompt_heuristic.py \
-    --input data/toy/inputs.json \
-    --tier "$tier" \
-    --output "build/prompt-heuristic/$tier.json"
-done
+로컬 검증(공식 `check_runtime.py` 활용)은 과제 지시에 따라 [`docs/RUNTIME.md`](docs/RUNTIME.md)를 따릅니다. 레지스트리 배포는 아래 "이미지 배포" 절 참고.
 
-PYTHONPATH=src python3 -m ossp_router.cli self-check \
-  --input data/toy/inputs.json \
-  --outcomes data/toy/outcomes.json \
-  --submissions build/prompt-heuristic \
-  --report build/prompt-heuristic-report.json
+## 성능 (Dev 기준)
+
+| tier | 예산비율 | 판정 | score | 선택분포 (light/ax31/k1) |
+| --- | ---: | --- | ---: | --- |
+| fast | 1.100 / 1.25 (88%) | OK | 0.6601 | 636 / 232 / 0 |
+| balanced | 1.790 / 2.0 (90%) | OK | 0.7062 | 176 / 692 / 0 |
+| premium | 2.627 / 4.0 (66%) | OK | 0.7310 | 177 / 648 / 43 |
+
+**가중 총점 0.6952** (baseline hash-regex 0.6954, oracle 0.8070)
+
+> baseline보다 약간 낮긴 하지만, 스트레스 시나리오 테스트에서 예산을 초과하는 경우가 없는 설정값입니다.
+
+## 라우팅 방식
+
+- BPE와 ngram으로 feature 구성.
+- 어떤 모델이 적합한지 예측 (score head)
+  - 학습 프롬프트로 구축한 검색 DB(kNN)와 ngram 회귀를 결합해, 세 모델
+    각각이 해당 프롬프트를 맞힐 확률을 추정.
+- 예상 비용 추정 (cost head)
+  - 로그 비용을 직접 회귀한 뒤 분위수 매핑으로 보정해, 실제 비용 분포에
+    맞춘 값을 사용.
+- k1을 써도 되는지 판별 (gate head)
+  - k1 투입이 실제로 유효한 case인지 별도로 판별해, 폭주 위험이 큰
+    case를 사전에 배제.
+- 최종 라우팅은 k1에 할당할 소수를 먼저 배치하고, 남은 예산에서 ax31/light를 분배하는 방식.
+
+```text
+프롬프트
+  -> BPE(4000 merge) 1-2gram 해싱 4096
+     + 문자 2-5gram 해싱 2048 (앞 500자)
+     + dense 8
+     = 6152 차원
+  -> score 3 head: retrieval(0.8) + ngram(0.2)
+       retrieval = 지도가중 metric -> SVD 512 사영 -> kNN(K=5/20/80, T=0.05/0.2)
+       ngram head 학습 타깃에만 이웃 평활 (K=10, alpha=0.3)
+  -> cost 3 head: log(비용) 직접 회귀 -> quantile mapping
+  -> gate head: k1 유효성 판별
+  -> 2단계 배분: k1 우선(개수 상한) -> 남은 예산 ax31 fill
 ```
 
-[`src/ossp_router/heuristic.py`](src/ossp_router/heuristic.py)의 특징 추출과
-`select_model`을 바꾸는 것이 가장 짧은 구현 경로입니다. 등급·문항 ID·입력
-순서가 아니라 프롬프트 내용만 모델 선택 함수에 전달하십시오. 더 강한 특징
-baseline과 공개 Train/Dev로 학습하는 예제는
-[baseline 안내](baselines/README.md)에 있습니다.
+### 등급별 정책
 
-정책 파일은 패키지에 포함된 동결 v1을 기본으로 사용하며, 별도 파일을
-검사할 때만 `--policy`를 지정합니다.
-
-저장소 루트에 기술 제출 정보 파일을 작성한 뒤에는 다음 명령으로 여섯 필드,
-코드 커밋 SHA, 이미지 다이제스트와 라이선스 값을 확인합니다.
-
-```console
-python3 tools/validate_technical_submission.py
+```text
+fast      k1 금지,     fill 0.85, ax31 예측이득 상위 70%
+balanced  k1 금지,     fill 0.80, ax31 예측이득 상위 80%
+premium   k1 5% 상한,  fill 0.55, ax31 예측이득 상위 80%
 ```
 
-최종 이미지의 실행 시간과 자원 제한은 공개 Train/Dev 전체로 미리 확인할 수
-있습니다. 로컬 태그는 검사 시작 시 변경 불가능한 이미지 ID로 고정됩니다.
+### 설계 흐름
 
-```console
-docker build --pull --platform linux/arm64 \
-  --file container/Dockerfile --tag my-router:check .
+기본 전제: light와 ax31의 경우 모든 문제에 대해서 유사한 모델이지만 성능적인 차이가 있고, k1은 추론으로 인해 다른 특성을 지닌다는 점에서 출발합니다.  
 
-PYTHONPATH=src python3 tools/check_runtime.py \
-  --image my-router:check \
-  --report build/runtime-check-report.json
-```
+- `light vs ax31`은 학습셋 기준 75%가 둘 다 처리 가능한 프롬프트였지만, 특정 모델이 선호되어야 할 25%의 경우 프롬프트에서 유의미한 단서를 찾을 수 없었습니다.
+- `k1`이 필요한 케이스는 프롬프트를 기반으로 어느 정도 추정이 가능했습니다.
+- 다만 `k1`이 폭주하는 경우가 종종 발생했는데, 소수 판별, 소인수분해, 자기확인, 반복문 내 변수 재할당 등 추론 모델이 자기 확인을 반복하는 경우입니다.
+  - 이 경우에도 모델의 특성으로 인한 폭주일 뿐, 프롬프트 상 구분은 어려웠습니다.
+  - 35자 프롬프트가 31,000토큰을 쓰는 케이스가 존재합니다. (ex. `List the prime factors of 38948129.`)
+  - 키워드 기반으로 대략적인 차단은 가능하나, 놓친 소수의 프롬프트만으로도 예산을 초과할 정도로 위험성이 높았습니다.
+  - 점수 하락을 감수해서라도 `k1` capacity를 제약하는 방식을 채택했습니다.
 
-이 검사는 위 materialization으로 만든 공개 Train 1,760문항과 Dev 880문항만
-사용합니다. 공개 모델별 outcome과 최종 평가 자료는 컨테이너에 전달하지
-않으며, 공식 장비와 다른 환경에서 측정한 시간은 참고값입니다.
+| 문제 | 판별력 측정 | 대응 |
+| --- | --- | --- |
+| light vs ax31 | AUC 0.54~0.60 | 예측 불가. 예산 여유분으로만 사용 |
+| vs k1 | gate AUC 0.775 | 예측 가능. 예산 우선 배정 |
+| k1 폭주 여부 | AUC 0.762 | 부족. 개수 상한 방어 도입 |
 
-## 문서
+#### 추가 1. k1 폭주 케이스와 지금 라우터의 배정 패턴
 
-이 챌린지를 이해하는 데 가장 중요한 네 문서는 다음과 같습니다.
+dev 기준 배정 실측 (premium, k1 총 43건):
 
-- [과제 규칙](docs/CHALLENGE_RULES.md)
-- [제출 안내](docs/SUBMISSION.md)
-- [컨테이너 실행 규격](docs/RUNTIME.md)
-- [데이터 카드](docs/DATA_CARD.md)
+| 패턴 | train 폭주율 | dev 폭주율 | k1 배정 |
+| --- | ---: | ---: | ---: |
+| (기저) | 10.0% | 10.8% | 43 |
+| prime factor | 60.0% | 80.0% | **0** |
+| 한국나이/띠/존댓말 | 79.2% | 77.8% | **0** |
+| List the | 66.7% | 66.7% | **0** |
+| count letters | 20.0% | 100.0% | **0** |
+| is prime | 50.0% | 0.0% | **0** |
+| 큰수(8자리+) | 19.6% | 15.4% | 12 |
 
-점수와 예외 처리가 필요할 때 참고해 주세요.
+명시적 규칙 없이도 gate head가 폭주 위험 패턴을 전부 배제합니다.
 
-- [점수 계산](docs/SCORING.md)
-- [실행 오류와 규칙 집행](docs/ENFORCEMENT.md)
-- [데이터 라이선스](DATA_LICENSES.md)
+#### 추가 2. 폐기한 시도
 
-공개 운영 절차와 자원 측정 근거는 [전체 문서 안내](docs/README.md)에 별도로
-모았습니다. 라우터 구현에 필요한 필수 문서는 아닙니다.
+| 시도 | 폐기한 이유 결과 |
+| --- | --- |
+| 프롬프트의 특성별 축 분류 | n-gram에 이미 포함 |
+| 축별 난이도 캐스케이드 | R2 0.428 -> 0.425 |
+| 문항반응이론 MIRT rank-1/2 제약 | rank-2 = 자유 head 동일, rank-1은 k1 붕괴 |
+| 위치 정보 / word n-gram / IDF 활용 | 각 +0.004 이하 |
+| 코드 문항 AST 정적 분석 (루프/중첩/인자길이) | 폭주 판별 AUC 변화없음 |
+| 코드 문항 k1 배제 | 역효과 (예산 초과 2->7회). 코드가 k1 효율 최고 24.3점/배 |
+| 코드 문항 ax31 배제 | 역효과 (-0.004). ax31 효율도 최고 308.9점/배 |
+| MLP Head 학습 | ridge 대비 전 지표 열세 |
+| CHAR_CUT 500 -> 4000 | score 하락 + 시간 2배 |
+| static embedding | 단독 0.165, 결합 +0.005 |
+| SW ranking (Bradley-Terry) | 단독 0.221, 최적 가중치 0.0 (kNN과 상관 0.95) |
+| 유사한 프롬프트의 난이도 DB 라벨 통일 | 유사쌍의 96%가 지문공유+질문상이. 묶어선 안됐음. |
+| 문항 내 질문이 그대로 존재하는지 정보를 활용 | 실제로 유의미한 지표이나, 라우팅 성능에 영향이 미미함. |
 
-출품작 제출 마감은 2026년 8월 27일 18:00(대한민국 표준시)이며,
-[공식 대회 접수 사이트](https://osscontest.kr/)의 출품작 제출 절차를 따릅니다.
-공식 결과보고서 원본 파일과 PDF를 업로드하며, 결과보고서의 `프로젝트 등록
-URL`로 공개 저장소를 제출합니다. 마감 전에는 결과보고서를 복수로 제출하거나
-자유롭게 다시 업로드할 수 있으며 마지막으로 접수된 파일을 심사합니다.
+#### 추가 3. 문헌 사례와 설계상의 대응
 
-`submission-ossp-skt.json`은 사이트에 별도로 업로드하지 않고 제출 저장소
-루트에 반드시 커밋합니다. 파일 형식과 최종 커밋 순서는
-[제출 안내](docs/SUBMISSION.md)에 기록합니다.
+RouteLLM(Ong et al., ICLR 2025), MMR-Bench, RouteJudge 중심으로 기존의 문제 확인.
 
-## 제공 내용
-
-이 저장소에는 공개 Train/Dev 자료, 네 가지 baseline, 형식·점수 검증 도구,
-참가자용 컨테이너 예제와 공개 평가 하네스가 들어 있습니다. 공식 플랫폼은
-`linux/arm64`이며 최종 자원 한도는
-[컨테이너 실행 규격](docs/RUNTIME.md)에 동결했습니다.
-
-## 라이선스
-
-프로젝트가 직접 작성한 코드와 문서는 [Apache License 2.0](LICENSE)으로
-제공합니다. 이 라이선스는 제3자 벤치마크 자료를 재라이선스하지 않습니다.
-자료별 조건은 [DATA_LICENSES.md](DATA_LICENSES.md)에 따로 기록합니다.
+- **저데이터에서 고용량 모델 실패**: RouteLLM에서 BERT/causal LLM 분류기가 Arena 데이터만으로는 무작위 수준. MLP 실패와 동일 현상
+- **MF 우세 보고**: RouteLLM/MMR-Bench 모두 matrix factorization 권장.
+- **IRT 라우터 존재**: RouteJudge에 NIRT/MIRT-Router 포함. 그러나 본 챌린지의 학습셋은 IRT 1차원이 깨져 2차원 이상이 필요했음.
+- **instance-based 불안정 경고**: MMR-Bench 지적과 반대로, 우리 데이터에서는 retrieval 비중이 높을수록 스트레스 기대값이 좋았음 (0.0 -> 0.6759, 0.8 -> 0.6822). 축별 이질성이 커서 국소 구조가 유효
